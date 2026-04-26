@@ -1,0 +1,14 @@
+mode: cron
+cron_download_mode: auto
+download_method: wget
+max_files_per_distro: 3
+min_free_gb: 5
+downloads_dir: downloads
+log_max_lines: 2000
+log_keep_files: 5
+distros:
+  - arch_linux
+  - debian
+  - ubuntu
+  - openwrt_x86
+  - cachy_os
