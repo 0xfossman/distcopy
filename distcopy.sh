@@ -4,6 +4,7 @@ set -euo pipefail
 CONFIG_FILE="${CONFIG_FILE:-distcopy.yaml}"
 CURRENT_DIR="$(pwd)"
 LOG_FILE="${LOG_FILE:-distcopy.log}"
+DRY_RUN=false
 
 # ===== Logging =====
 log() {
@@ -14,6 +15,14 @@ log() {
 fail() {
   log "ERROR: $*"
   exit 1
+}
+
+run_cmd() {
+  if $DRY_RUN; then
+    log "DRY-RUN: $*"
+    return 0
+  fi
+  "$@"
 }
 
 rotate_log() {
@@ -37,6 +46,11 @@ rotate_log() {
       fi
     fi
   done
+  if $DRY_RUN; then
+    log "DRY-RUN: would rotate log file '$LOG_FILE'"
+    return 0
+  fi
+
   mv "$LOG_FILE" "${LOG_FILE}.1"
   : > "$LOG_FILE"
 }
@@ -82,10 +96,10 @@ install_dependency() {
   [[ -n "$mgr" ]] || fail "No supported package manager found to install '$pkg'."
 
   case "$mgr" in
-    apt) apt-get update && apt-get install -y "$pkg" ;;
-    dnf) dnf install -y "$pkg" ;;
-    pacman) pacman -Sy --noconfirm "$pkg" ;;
-    zypper) zypper --non-interactive install "$pkg" ;;
+    apt) run_cmd apt-get update && run_cmd apt-get install -y "$pkg" ;;
+    dnf) run_cmd dnf install -y "$pkg" ;;
+    pacman) run_cmd pacman -Sy --noconfirm "$pkg" ;;
+    zypper) run_cmd zypper --non-interactive install "$pkg" ;;
   esac
 }
 
@@ -132,6 +146,11 @@ ensure_base_dependencies() {
 
   [[ ${#missing[@]} -eq 0 ]] && return 0
 
+  if $DRY_RUN; then
+    log "DRY-RUN: missing dependencies detected: ${missing[*]} (installation/check enforcement skipped)"
+    return 0
+  fi
+
   if ! is_interactive; then
     fail "Missing dependencies in non-interactive mode: ${missing[*]}"
   fi
@@ -146,6 +165,7 @@ ensure_base_dependencies() {
       pkg="cronie"
     fi
 
+    ensure_dialog_available
     if ask_install_with_dialog "$pkg"; then
       install_dependency "$pkg"
       log "Installed dependency: $pkg"
@@ -267,7 +287,7 @@ check_disk_space() {
 
 ensure_download_dir() {
   local dir="$1"
-  [[ -d "$dir" ]] || mkdir -p "$dir"
+  [[ -d "$dir" ]] || run_cmd mkdir -p "$dir"
 }
 
 run_check_mode() {
@@ -283,7 +303,12 @@ run_check_mode() {
   check_step "checking for free disk space (${min_free_gb}GB)....." check_disk_space "$min_free_gb" || fail "Not enough free disk space"
 
   ensure_download_dir "$downloads_dir"
-  check_step "checking for downloads directory (${downloads_dir})....." test -d "$downloads_dir" || fail "Cannot create downloads directory"
+  if $DRY_RUN && [[ ! -d "$downloads_dir" ]]; then
+    printf '%s ✅\n' "checking for downloads directory (${downloads_dir})....."
+    log "DRY-RUN: downloads directory does not exist, but creation is simulated"
+  else
+    check_step "checking for downloads directory (${downloads_dir})....." test -d "$downloads_dir" || fail "Cannot create downloads directory"
+  fi
 }
 
 # ===== Download + prune =====
@@ -315,7 +340,7 @@ download_via_wget() {
   target_file="$(build_target_file_for_wget "$distro" "$direct_url")"
 
   log "WGET MODE: downloading $distro"
-  wget -c -O "$target_dir/$target_file" "$direct_url"
+  run_cmd wget -c -O "$target_dir/$target_file" "$direct_url"
   log "WGET MODE: completed $target_dir/$target_file"
 }
 
@@ -327,27 +352,28 @@ download_via_rtorrent() {
   [[ -n "$torrent_url" ]] || fail "TORRENT MODE: no torrent URL configured for '$distro'"
 
   log "TORRENT MODE: fetching torrent metadata for $distro"
-  if ! wget -q -O "$torrent_file" "$torrent_url"; then
-    rm -f "$torrent_file"
+  if ! run_cmd wget -q -O "$torrent_file" "$torrent_url"; then
+    run_cmd rm -f "$torrent_file"
     fail "TORRENT MODE: failed to fetch torrent file for '$distro'"
   fi
 
   log "TORRENT MODE: starting rtorrent for $distro"
-  if rtorrent "$torrent_file"; then
+  if run_cmd rtorrent "$torrent_file"; then
     log "TORRENT MODE: rtorrent exited successfully for $distro"
   else
     local rc=$?
     log "TORRENT MODE: rtorrent exited with code $rc for $distro"
-    rm -f "$torrent_file"
+    run_cmd rm -f "$torrent_file"
     fail "TORRENT MODE failed for '$distro'"
   fi
 
-  rm -f "$torrent_file"
+  run_cmd rm -f "$torrent_file"
   log "TORRENT MODE: removed torrent metadata file for $distro"
 }
 
 prune_old_files_wget_only() {
   local distro="$1" target_dir="$2" keep_max="$3"
+  [[ -d "$target_dir" ]] || return 0
 
   mapfile -t files < <(find "$target_dir" -maxdepth 1 -type f -name "${distro}_*" \
     ! -name "*.part" ! -name "*.tmp" ! -name "*.torrent" \
@@ -359,7 +385,7 @@ prune_old_files_wget_only() {
   local remove_count=$((count - keep_max))
   local i
   for ((i = 0; i < remove_count; i++)); do
-    rm -f "${files[$i]}"
+    run_cmd rm -f "${files[$i]}"
     log "Pruned old file (${distro}): ${files[$i]}"
   done
 }
@@ -437,9 +463,25 @@ run_cron_mode() {
 }
 
 main() {
-  ensure_dialog_available
+  local setup_mode=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --setup)
+        setup_mode=true
+        shift
+        ;;
+      --dry-run)
+        DRY_RUN=true
+        shift
+        ;;
+      *)
+        fail "Unknown argument: $1 (supported: --setup, --dry-run)"
+        ;;
+    esac
+  done
 
-  if [[ "${1:-}" == "--setup" ]]; then
+  if $setup_mode; then
+    ensure_dialog_available
     setup_config_with_dialog
     exit 0
   fi

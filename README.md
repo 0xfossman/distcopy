@@ -17,6 +17,7 @@ It supports clear execution modes (`check`, `wget`, `torrent`, `cron`) and is de
 - Optional dependency installation (interactive + root) using `dialog`
 - Stops immediately if `distcopy.yaml` is missing
 - Resumable `wget` downloads (`-c`)
+- Dry-run support for manual simulation (`--dry-run`)
 - Torrent URLs included (including Arch torrent URL)
 - Temporary `.torrent` metadata file is deleted after `rtorrent` finishes
 - Log rotation by line count (`log_max_lines`, `log_keep_files`)
@@ -47,6 +48,14 @@ This creates `distcopy.yaml` via a `dialog` checklist.
 ```
 
 If `distcopy.yaml` does not exist, the script exits with an error.
+
+## Manual dry-run
+
+```bash
+./distcopy.sh --dry-run
+```
+
+This prints what would be executed (downloads, pruning, installs, log rotation) without applying changes.
 
 ## Modes
 
